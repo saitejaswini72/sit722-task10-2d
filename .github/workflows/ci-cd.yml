@@ -1,54 +1,179 @@
-name: CI/CD Pipeline
+name: SIT722 10.2D – CI/CD (ACR + AKS)
+
+permissions:
+  id-token: write   # <-- needed for Azure OIDC login
+  contents: read
+
 
 on:
   push:
-    branches:
-      - main
+    branches: [ "testing", "main" ]
   pull_request:
-    branches:
-      - main
+    branches: [ "testing" ]
+
+env:
+  RG: ${{ secrets.AZURE_RG }}
+  ACR: ${{ secrets.AZURE_ACR }}
+  AKS_RG: ${{ secrets.AKS_RESOURCE_GROUP }}
+  AKS_CLUSTER: ${{ secrets.AKS_CLUSTER }}
+  PRODUCT_IMG: product_service
+  ORDER_IMG: order_service
+  CUSTOMER_IMG: customer_service
 
 jobs:
-  build:
+  # -------- Stage 1: tests -> build & push to ACR (branch=testing) --------
+  test:
+    if: startsWith(github.ref, 'refs/heads/testing')
     runs-on: ubuntu-latest
-
-    services:
-      postgres:
-        image: postgres:15-alpine
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: testdb
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd="pg_isready -U postgres -d testdb"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=5
-
-      rabbitmq:
-        image: rabbitmq:3-management
-        ports:
-          - 5672:5672
-          - 15672:15672
-
+    strategy:
+      matrix:
+        service: [ "backend/product_service", "backend/order_service", "backend/customer_service" ]
+    defaults:
+      run:
+        working-directory: ${{ matrix.service }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: "3.10"
-
-      - name: Install dependencies
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install -r backend/product_service/requirements.txt
-          pip install -r backend/order_service/requirements.txt
-          pip install -r backend/customer_service/requirements.txt
-
+          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install pytest
       - name: Run tests
+        run: pytest --maxfail=5 --disable-warnings -q
+
+  build_push_acr:
+    if: startsWith(github.ref, 'refs/heads/testing')
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Login to ACR
+        run: az acr login -n $ACR
+
+      - name: Build & push product
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend/product_service
+          file: ./backend/product_service/Dockerfile
+          push: true
+          tags: |
+            ${{ env.ACR }}.azurecr.io/${{ env.PRODUCT_IMG }}:latest
+            ${{ env.ACR }}.azurecr.io/${{ env.PRODUCT_IMG }}:${{ github.sha }}
+
+      - name: Build & push order
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend/order_service
+          file: ./backend/order_service/Dockerfile
+          push: true
+          tags: |
+            ${{ env.ACR }}.azurecr.io/${{ env.ORDER_IMG }}:latest
+            ${{ env.ACR }}.azurecr.io/${{ env.ORDER_IMG }}:${{ github.sha }}
+
+      - name: Build & push customer
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend/customer_service
+          file: ./backend/customer_service/Dockerfile
+          push: true
+          tags: |
+            ${{ env.ACR }}.azurecr.io/${{ env.CUSTOMER_IMG }}:latest
+            ${{ env.ACR }}.azurecr.io/${{ env.CUSTOMER_IMG }}:${{ github.sha }}
+
+  # -------- Stage 2: ephemeral STAGING namespace on AKS (testing) --------
+  staging_deploy_test_destroy:
+    if: startsWith(github.ref, 'refs/heads/testing')
+    needs: build_push_acr
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4 
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Connect to AKS
+        run: az aks get-credentials -g ${{ env.AKS_RG }} -n ${{ env.AKS_CLUSTER }} --overwrite-existing
+
+      - name: Create staging namespace
+        run: kubectl create ns stg-${{ github.run_id }}
+
+      - name: Apply manifests into staging
         run: |
-          pytest --maxfail=5 --disable-warnings -q
+          sed 's/namespace: prod/namespace: stg-${{ github.run_id }}/g' k8s/deployment-product.yaml | kubectl apply -f -
+          sed 's/namespace: prod/namespace: stg-${{ github.run_id }}/g' k8s/deployment-order.yaml   | kubectl apply -f -
+          sed 's/namespace: prod/namespace: stg-${{ github.run_id }}/g' k8s/deployment-customer.yaml| kubectl apply -f -
+
+      - name: Update images to this commit
+        run: |
+          NS=stg-${{ github.run_id }}
+          kubectl -n $NS set image deploy/product-deploy  product=${{ env.ACR }}.azurecr.io/${{ env.PRODUCT_IMG }}:${{ github.sha }}
+          kubectl -n $NS set image deploy/order-deploy    order=${{ env.ACR }}.azurecr.io/${{ env.ORDER_IMG }}:${{ github.sha }}
+          kubectl -n $NS set image deploy/customer-deploy customer=${{ env.ACR }}.azurecr.io/${{ env.CUSTOMER_IMG }}:${{ github.sha }}
+
+      - name: Wait for rollouts
+        run: |
+          NS=stg-${{ github.run_id }}
+          kubectl -n $NS rollout status deploy/product-deploy --timeout=180s
+          kubectl -n $NS rollout status deploy/order-deploy   --timeout=180s
+          kubectl -n $NS rollout status deploy/customer-deploy --timeout=180s
+
+      - name: Smoke test from inside cluster
+        run: |
+          NS=stg-${{ github.run_id }}
+          kubectl -n $NS run curl --image=busybox --rm -it --restart=Never -- /bin/sh -c '
+            wget -qO- http://product-svc/health && echo OK;
+            wget -qO- http://order-svc/health && echo OK;
+            wget -qO- http://customer-svc/health && echo OK;
+          '
+
+      - name: Destroy staging namespace
+        if: always()
+        run: kubectl delete ns stg-${{ github.run_id }}
+
+  # -------- Stage 3: deploy to existing PROD (main) --------
+  prod_deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Connect to AKS
+        run: az aks get-credentials -g ${{ env.AKS_RG }} -n ${{ env.AKS_CLUSTER }} --overwrite-existing
+
+      - name: Ensure prod ns exists
+        run: kubectl apply -f k8s/namespace.yaml
+
+      - name: Apply prod manifests
+        run: |
+          kubectl apply -f k8s/deployment-product.yaml
+          kubectl apply -f k8s/deployment-order.yaml
+          kubectl apply -f k8s/deployment-customer.yaml
+
+      - name: Update prod to latest images
+        run: |
+          kubectl -n prod set image deploy/product-deploy  product=${{ env.ACR }}.azurecr.io/${{ env.PRODUCT_IMG }}:latest
+          kubectl -n prod set image deploy/order-deploy    order=${{ env.ACR }}.azurecr.io/${{ env.ORDER_IMG }}:latest
+          kubectl -n prod set image deploy/customer-deploy customer=${{ env.ACR }}.azurecr.io/${{ env.CUSTOMER_IMG }}:latest
+
+      - name: Wait for prod rollouts
+        run: |
+          kubectl -n prod rollout status deploy/product-deploy --timeout=180s
+          kubectl -n prod rollout status deploy/order-deploy   --timeout=180s
+          kubectl -n prod rollout status deploy/customer-deploy --timeout=180s
