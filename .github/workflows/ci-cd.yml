@@ -1,5 +1,10 @@
 name: SIT722 10.2D – CI/CD (ACR + AKS)
 
+permissions:
+  id-token: write   # <-- needed for Azure OIDC login
+  contents: read
+
+
 on:
   push:
     branches: [ "testing", "main" ]

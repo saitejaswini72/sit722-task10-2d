@@ -1,2 +1,1 @@
-def test_math():
-    assert 1 + 1 == 2
+﻿def test_math():\n    assert 1 + 1 == 2
