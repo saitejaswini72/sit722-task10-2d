@@ -1,5 +1,3 @@
-# week05/backend/customer_service/app/models.py
-
 from sqlalchemy import Column, DateTime, Integer, String
 from sqlalchemy.sql import func  # For auto-populating timestamps
 

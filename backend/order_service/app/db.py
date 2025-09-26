@@ -1,5 +1,3 @@
-# week05/backend/order_service/app/db.py
-
 import os
 
 from sqlalchemy import create_engine

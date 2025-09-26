@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: product-deploy
+  namespace: prod
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: product } }
+  template:
+    metadata: { labels: { app: product } }
+    spec:
+      containers:
+        - name: product
+          image: YOUR_ACR_NAME.azurecr.io/product_service:latest
+          ports: [{ containerPort: 8000 }]
+          env:
+            - { name: POSTGRES_HOST, value: product-db }
+            - { name: POSTGRES_DB,   valueFrom: { configMapKeyRef: { name: app-config, key: PRODUCTS_DB_NAME } } }
+            - { name: POSTGRES_USER, valueFrom: { secretKeyRef: { name: db-credentials, key: POSTGRES_USER } } }
+            - { name: POSTGRES_PASSWORD, valueFrom: { secretKeyRef: { name: db-credentials, key: POSTGRES_PASSWORD } } }
+            - { name: AMQP_URL, value: amqp://guest:guest@rabbitmq:5672/ }
+          readinessProbe: { httpGet: { path: /health, port: 8000 }, initialDelaySeconds: 5 }
+          livenessProbe:  { httpGet: { path: /health, port: 8000 }, initialDelaySeconds: 15 }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: product-svc
+  namespace: prod
+spec:
+  selector: { app: product }
+  ports: [{ name: http, port: 8000, targetPort: 8000 }]
+  type: ClusterIP

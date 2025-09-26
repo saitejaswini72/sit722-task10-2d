@@ -1,5 +1,3 @@
-# week05/backend/order_service/tests/test_main.py
-
 import logging
 import time
 from decimal import Decimal

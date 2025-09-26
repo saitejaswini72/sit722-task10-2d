@@ -1,55 +1,49 @@
-# week05/k8s/rabbitmq.yaml
-
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rabbitmq-pvc
+  namespace: prod
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources: { requests: { storage: 1Gi } }
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: rabbitmq-deployment-w05-aks
-  labels:
-    app: rabbitmq
+  name: rabbitmq
+  namespace: prod
+  labels: { app: rabbitmq }
 spec:
   replicas: 1
-  selector:
-    matchLabels:
-      app: rabbitmq
+  selector: { matchLabels: { app: rabbitmq } }
   template:
-    metadata:
-      labels:
-        app: rabbitmq
+    metadata: { labels: { app: rabbitmq } }
     spec:
       containers:
-      - name: rabbitmq
-        image: rabbitmq:3-management-alpine
-        ports:
-        - containerPort: 5672
-        - containerPort: 15672
-        env:
-        - name: RABBITMQ_DEFAULT_USER
-          valueFrom:
-            secretKeyRef:
-              name: ecomm-secrets-w05-aks
-              key: RABBITMQ_USER
-        - name: RABBITMQ_DEFAULT_PASS
-          valueFrom:
-            secretKeyRef:
-              name: ecomm-secrets-w05-aks
-              key: RABBITMQ_PASS
+        - name: rabbitmq
+          image: rabbitmq:3-management
+          ports: [{containerPort:5672},{containerPort:15672}]
+          env:
+            - name: RABBITMQ_DEFAULT_USER
+              valueFrom: { secretKeyRef: { name: rabbitmq-credentials, key: RABBITMQ_USER } }
+            - name: RABBITMQ_DEFAULT_PASS
+              valueFrom: { secretKeyRef: { name: rabbitmq-credentials, key: RABBITMQ_PASS } }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/rabbitmq }
+          readinessProbe: { exec: { command: ["rabbitmq-diagnostics","-q","ping"] }, initialDelaySeconds: 5 }
+          livenessProbe:  { exec: { command: ["rabbitmq-diagnostics","-q","ping"] }, initialDelaySeconds: 15 }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: rabbitmq-pvc }
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: rabbitmq-service-w05-aks
-  labels:
-    app: rabbitmq
+  name: rabbitmq
+  namespace: prod
 spec:
-  selector:
-    app: rabbitmq
+  selector: { app: rabbitmq }
   ports:
-    - name: amqp
-      protocol: TCP
-      port: 5672
-      targetPort: 5672
-    - name: management
-      protocol: TCP
-      port: 15672
-      targetPort: 15672
+    - { name: amqp, port: 5672, targetPort: 5672 }
+    - { name: http, port: 15672, targetPort: 15672 }
   type: ClusterIP

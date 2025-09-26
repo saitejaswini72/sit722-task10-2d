@@ -1,5 +1,3 @@
-# week05/backend/order_service/app/schemas.py
-
 from datetime import datetime
 from typing import List, Optional
 from pydantic import BaseModel, ConfigDict, Field

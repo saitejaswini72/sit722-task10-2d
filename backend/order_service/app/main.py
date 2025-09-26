@@ -1,5 +1,3 @@
-# week05/backend/order_service/app/main.py
-
 import asyncio
 import json
 import logging
