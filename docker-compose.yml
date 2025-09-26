@@ -1,9 +1,7 @@
-
+version: "3.9"
 
 services:
-  # -------------------------------
-  # Product Database
-  # -------------------------------
+  # ----------- Databases -----------
   product_db:
     image: postgres:15-alpine
     environment:
@@ -11,18 +9,15 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "5432:5432"
+      - "5432:5432"   # local access (optional)
     volumes:
       - product_db_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d products"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
 
-  # -------------------------------
-  # Order Database
-  # -------------------------------
   order_db:
     image: postgres:15-alpine
     environment:
@@ -37,113 +32,56 @@ services:
       test: ["CMD-SHELL", "pg_isready -U postgres -d orders"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
 
-  # -------------------------------
-  # RabbitMQ
-  # -------------------------------
-  rabbitmq:
-    image: rabbitmq:3-management
-    container_name: rabbitmq
-    ports:
-      - "5672:5672"   # for services
-      - "15672:15672" # management console
+  customer_db:
+    image: postgres:15-alpine
     environment:
-      RABBITMQ_DEFAULT_USER: guest
-      RABBITMQ_DEFAULT_PASS: guest
-    volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
-
-  # -------------------------------
-  # Product Service (FastAPI)
-  # -------------------------------
-  product_service:
-    build:
-      context: ./backend/product_service
-      dockerfile: Dockerfile
-    ports:
-      - "8000:8000"
-    environment:
-      POSTGRES_HOST: product_db
-      POSTGRES_DB: products
+      POSTGRES_DB: customers
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      RABBITMQ_HOST: rabbitmq
-      RABBITMQ_PORT: 5672
+    ports:
+      - "5434:5432"
+    volumes:
+      - customer_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d customers"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ----------- Services -----------
+  product_service:
+    build: ./backend/product_service
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@product_db:5432/products
     depends_on:
       product_db:
         condition: service_healthy
-      rabbitmq:
-        condition: service_started
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
-
-  # -------------------------------
-  # Order Service (FastAPI)
-  # -------------------------------
-  order_service:
-    build:
-      context: ./backend/order_service
-      dockerfile: Dockerfile
     ports:
       - "8001:8000"
+
+  order_service:
+    build: ./backend/order_service
     environment:
-      POSTGRES_HOST: order_db
-      POSTGRES_DB: orders
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      PRODUCT_SERVICE_URL: http://product_service:8000
-      RABBITMQ_HOST: rabbitmq
-      RABBITMQ_PORT: 5672
+      DATABASE_URL: postgresql://postgres:postgres@order_db:5432/orders
     depends_on:
       order_db:
         condition: service_healthy
-      product_service:
-        condition: service_started
-      rabbitmq:
-        condition: service_started
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
-
-  # -------------------------------
-  # Customer Service (FastAPI)
-  # -------------------------------
-  customer_service:
-    build:
-      context: ./backend/customer_service
-      dockerfile: Dockerfile
     ports:
       - "8002:8000"
+
+  customer_service:
+    build: ./backend/customer_service
     environment:
-      POSTGRES_HOST: order_db
-      POSTGRES_DB: orders
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      RABBITMQ_HOST: rabbitmq
-      RABBITMQ_PORT: 5672
+      DATABASE_URL: postgresql://postgres:postgres@customer_db:5432/customers
     depends_on:
-      order_db:
+      customer_db:
         condition: service_healthy
-      rabbitmq:
-        condition: service_started
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
-
-  # -------------------------------
-  # Frontend (Nginx)
-  # -------------------------------
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
     ports:
-      - "3000:80"
-    depends_on:
-      - product_service
-      - order_service
-      - customer_service
+      - "8003:8000"
 
-# -------------------------------
-# Volumes
-# -------------------------------
 volumes:
   product_db_data:
   order_db_data:
-  rabbitmq_data:
+  customer_db_data:

@@ -1,9 +1,0 @@
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: app-config
-  namespace: prod
-data:
-  PRODUCTS_DB_NAME: "products"
-  ORDERS_DB_NAME: "orders"
-  CUSTOMERS_DB_NAME: "customers"
